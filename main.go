@@ -6,7 +6,6 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
-	"strconv"
 	"syscall"
 	"time"
 
@@ -50,30 +49,8 @@ func main() {
 	defer storage.Close()
 	logger.Println("LevelDB storage initialized successfully")
 
-	// Load or create configuration
-	config := p2p.NewConfig(*configPath)
-
-	// Try to load existing config from database
-	dbConfig, err := storage.LoadConfig()
-	if err != nil {
-		logger.Printf("Warning: Could not load configuration from database: %v", err)
-	} else if dbConfig != nil {
-		logger.Println("Configuration loaded from database")
-		config = dbConfig
-	}
-
-	// Create node manager
-	nodeManager := p2p.NewNodeManager(config, storage, logger)
-
-	// Create seed node instance
-	seed := &p2p.SeedNode{
-		ID:          "localhost:" + strconv.Itoa(*port),
-		Port:        *port,
-		router:      nil, // Will be initialized in Start()
-		logger:      logger,
-		config:      config,
-		nodeManager: nodeManager,
-	}
+	// Create a new seed node using the provided constructor
+	seed := p2p.NewSeedNode(*port, logger)
 
 	// Set custom intervals if specified
 	if *checkInterval > 0 {
@@ -88,32 +65,12 @@ func main() {
 	seed.Start()
 	logger.Println("Seed node started successfully")
 
-	// Periodically save the configuration to both file and database
-	go func() {
-		ticker := time.NewTicker(5 * time.Minute)
-		defer ticker.Stop()
-
-		for {
-			<-ticker.C
-			logger.Println("Saving configuration...")
-
-			// Save to file
-			if err := config.Save(); err != nil {
-				logger.Printf("Error saving configuration to file: %v", err)
-			}
-
-			// Save to database
-			if err := storage.SaveConfig(config); err != nil {
-				logger.Printf("Error saving configuration to database: %v", err)
-			}
-		}
-	}()
-
 	// Record startup statistic
-	if err := storage.StoreStatistic("node_startup", map[string]interface{}{
+	nodes, _ := storage.LoadAllNodes()
+	if err := storage.StoreStatistic("node_startup", map[string]any{
 		"time":       time.Now().Format(time.RFC3339),
 		"port":       *port,
-		"totalNodes": len(nodeManager.GetAllNodes()),
+		"totalNodes": len(nodes),
 	}); err != nil {
 		logger.Printf("Error storing startup statistic: %v", err)
 	}
@@ -124,18 +81,22 @@ func main() {
 	<-c
 
 	logger.Println("Shutting down seed node...")
-
-	// Save final state before exit
-	if err := nodeManager.SaveState(); err != nil {
-		logger.Printf("Error saving node manager state: %v", err)
-	}
+	seed.Stop()
 
 	// Record shutdown statistic
+	nodeStats, err := storage.LoadAllNodes()
+	activeNodes := 0
+	for _, node := range nodeStats {
+		if node.IsResponding {
+			activeNodes++
+		}
+	}
+
 	if err := storage.StoreStatistic("node_shutdown", map[string]interface{}{
 		"time":        time.Now().Format(time.RFC3339),
 		"uptime":      time.Since(time.Now()).String(),
-		"totalNodes":  len(nodeManager.GetAllNodes()),
-		"activeNodes": len(nodeManager.GetActiveNodes()),
+		"totalNodes":  len(nodeStats),
+		"activeNodes": activeNodes,
 	}); err != nil {
 		logger.Printf("Error storing shutdown statistic: %v", err)
 	}
