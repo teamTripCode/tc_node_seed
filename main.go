@@ -52,6 +52,9 @@ func main() {
 	// Create a new seed node using the provided constructor
 	seed := p2p.NewSeedNode(*port, logger)
 
+	// Set the storage for the seed node
+	seed.SetStorage(storage)
+
 	// Set custom intervals if specified
 	if *checkInterval > 0 {
 		seed.SetHealthCheckInterval(*checkInterval)

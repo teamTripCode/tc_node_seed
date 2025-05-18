@@ -321,3 +321,13 @@ func (s *SeedNode) GetKnownNodes() []string {
 func (s *SeedNode) GetActiveNodes() []string {
 	return s.nodeManager.GetActiveNodes()
 }
+
+// SetStorage sets the database storage for the seed node
+func (s *SeedNode) SetStorage(storage *DBStorage) {
+	s.storage = storage
+	// Initialize node manager with the provided storage
+	s.nodeManager = NewNodeManager(s.config, storage, s.logger)
+
+	// Add this node to the list
+	s.nodeManager.AddNode(s.ID)
+}
