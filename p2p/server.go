@@ -38,7 +38,11 @@ func NewSeedNode(port int, logger *log.Logger) *SeedNode {
 	}
 
 	// Inicializar gestor de nodos
-	seed.nodeManager = NewNodeManager(config, logger)
+	dbStorage, err := NewDBStorage("nodes.db", logger) // Ajusta el nombre del archivo si es necesario
+	if err != nil {
+		logger.Fatalf("Error inicializando DBStorage: %v", err)
+	}
+	seed.nodeManager = NewNodeManager(config, dbStorage, logger)
 
 	// Añadir este nodo a la lista
 	seed.nodeManager.AddNode(nodeID)
