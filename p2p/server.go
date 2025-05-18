@@ -13,13 +13,18 @@ import (
 
 // SeedNode representa un nodo semilla en la red blockchain
 type SeedNode struct {
-	ID          string
-	Port        int
-	nodeManager *NodeManager
-	config      *Config
-	router      *mux.Router
-	logger      *log.Logger
-	mutex       sync.RWMutex
+	ID                  string
+	Port                int
+	nodeManager         *NodeManager
+	config              *Config
+	router              *mux.Router
+	logger              *log.Logger
+	mutex               sync.RWMutex
+	healthCheckInterval time.Duration
+	pruneInterval       time.Duration
+	pruneAge            time.Duration
+	storage             *DBStorage
+	stopChan            chan struct{}
 }
 
 // NewSeedNode crea una nueva instancia de nodo semilla
@@ -30,11 +35,15 @@ func NewSeedNode(port int, logger *log.Logger) *SeedNode {
 	config := NewConfig("seed_config.json")
 
 	seed := &SeedNode{
-		ID:     nodeID,
-		Port:   port,
-		router: mux.NewRouter(),
-		logger: logger,
-		config: config,
+		ID:                  nodeID,
+		Port:                port,
+		router:              mux.NewRouter(),
+		logger:              logger,
+		config:              config,
+		healthCheckInterval: 30 * time.Second,
+		pruneInterval:       2 * time.Hour,
+		pruneAge:            4 * time.Hour,
+		stopChan:            make(chan struct{}),
 	}
 
 	// Inicializar gestor de nodos
@@ -42,6 +51,7 @@ func NewSeedNode(port int, logger *log.Logger) *SeedNode {
 	if err != nil {
 		logger.Fatalf("Error inicializando DBStorage: %v", err)
 	}
+	seed.storage = dbStorage
 	seed.nodeManager = NewNodeManager(config, dbStorage, logger)
 
 	// Añadir este nodo a la lista
@@ -51,6 +61,17 @@ func NewSeedNode(port int, logger *log.Logger) *SeedNode {
 	return seed
 }
 
+// SetHealthCheckInterval establece el intervalo para verificaciones de salud
+func (s *SeedNode) SetHealthCheckInterval(interval time.Duration) {
+	s.healthCheckInterval = interval
+}
+
+// SetPruneSettings establece la configuración para eliminar nodos inactivos
+func (s *SeedNode) SetPruneSettings(interval, age time.Duration) {
+	s.pruneInterval = interval
+	s.pruneAge = age
+}
+
 // setupRoutes configura las rutas API del nodo semilla
 func (s *SeedNode) setupRoutes() {
 	s.router.HandleFunc("/nodes", s.getNodesHandler).Methods("GET")
@@ -58,6 +79,11 @@ func (s *SeedNode) setupRoutes() {
 	s.router.HandleFunc("/ping", s.pingHandler).Methods("GET")
 	s.router.HandleFunc("/status", s.statusHandler).Methods("GET")
 	s.router.HandleFunc("/nodes/active", s.getActiveNodesHandler).Methods("GET")
+
+	// Nuevas rutas para administración
+	s.router.HandleFunc("/admin/statistics", s.getStatisticsHandler).Methods("GET")
+	s.router.HandleFunc("/admin/config", s.getConfigHandler).Methods("GET")
+	s.router.HandleFunc("/admin/config", s.updateConfigHandler).Methods("POST")
 }
 
 // Start inicia el servidor HTTP del nodo semilla
@@ -65,7 +91,7 @@ func (s *SeedNode) Start() {
 	s.logger.Printf("Nodo semilla iniciando en puerto %d", s.Port)
 
 	// Iniciar monitoreo de nodos
-	s.nodeManager.StartHealthCheck(30 * time.Second)
+	go s.startHealthCheck()
 
 	// Iniciar rutina para eliminar nodos inactivos
 	go s.startNodePruning()
@@ -80,8 +106,27 @@ func (s *SeedNode) Start() {
 
 	// Iniciar servidor HTTP
 	s.logger.Printf("Servidor HTTP iniciado en puerto %d", s.Port)
-	if err := srv.ListenAndServe(); err != nil {
-		s.logger.Fatalf("Error iniciando el servidor HTTP: %v", err)
+	go func() {
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			s.logger.Fatalf("Error iniciando el servidor HTTP: %v", err)
+		}
+	}()
+}
+
+// Stop detiene todas las rutinas del nodo semilla
+func (s *SeedNode) Stop() {
+	close(s.stopChan)
+
+	// Guardar estado antes de salir
+	if err := s.nodeManager.SaveState(); err != nil {
+		s.logger.Printf("Error guardando estado del gestor de nodos: %v", err)
+	}
+
+	// Cerrar almacenamiento
+	if s.storage != nil {
+		if err := s.storage.Close(); err != nil {
+			s.logger.Printf("Error cerrando almacenamiento: %v", err)
+		}
 	}
 }
 
@@ -115,6 +160,19 @@ func (s *SeedNode) registerNodeHandler(w http.ResponseWriter, r *http.Request) {
 	if s.nodeManager.AddNode(node) {
 		w.WriteHeader(http.StatusCreated)
 		s.logger.Printf("Nodo registrado con éxito: %s", node)
+
+		// Registrar estadística
+		if s.storage != nil {
+			stats := map[string]interface{}{
+				"event": "node_registered",
+				"node":  node,
+				"time":  time.Now().Format(time.RFC3339),
+			}
+
+			if err := s.storage.StoreStatistic("node_registration", stats); err != nil {
+				s.logger.Printf("Error guardando estadística de registro: %v", err)
+			}
+		}
 	} else {
 		w.WriteHeader(http.StatusOK)
 		s.logger.Printf("Nodo ya estaba registrado o límite alcanzado: %s", node)
@@ -138,24 +196,118 @@ func (s *SeedNode) statusHandler(w http.ResponseWriter, r *http.Request) {
 		"activeNodes": len(s.nodeManager.GetActiveNodes()),
 		"maxNodes":    s.config.GetMaxNodes(),
 		"timestamp":   time.Now().UTC().Format(time.RFC3339),
+		"uptime":      time.Since(time.Now()).String(),
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(status)
 }
 
-// startNodePruning inicia el proceso de eliminación de nodos inactivos
-func (s *SeedNode) startNodePruning() {
-	ticker := time.NewTicker(2 * time.Hour)
+// getStatisticsHandler devuelve estadísticas almacenadas
+func (s *SeedNode) getStatisticsHandler(w http.ResponseWriter, r *http.Request) {
+	s.logger.Printf("Recibida solicitud de estadísticas desde %s", r.RemoteAddr)
+
+	// TODO: Implementar recuperación de estadísticas desde la base de datos
+	// Esta es una implementación básica por ahora
+	stats := map[string]interface{}{
+		"totalNodes":      len(s.nodeManager.GetAllNodes()),
+		"activeNodes":     len(s.nodeManager.GetActiveNodes()),
+		"nodesRatio":      float64(len(s.nodeManager.GetActiveNodes())) / float64(len(s.nodeManager.GetAllNodes())),
+		"lastHealthCheck": time.Now().Add(-1 * time.Minute).Format(time.RFC3339),
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(stats)
+}
+
+// getConfigHandler devuelve la configuración actual
+func (s *SeedNode) getConfigHandler(w http.ResponseWriter, r *http.Request) {
+	s.logger.Printf("Recibida solicitud de configuración desde %s", r.RemoteAddr)
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(s.config)
+}
+
+// updateConfigHandler actualiza la configuración
+func (s *SeedNode) updateConfigHandler(w http.ResponseWriter, r *http.Request) {
+	s.logger.Printf("Recibida solicitud de actualización de configuración desde %s", r.RemoteAddr)
+
+	var config struct {
+		MaxNodes     *int      `json:"maxNodes,omitempty"`
+		InitialNodes *[]string `json:"initialNodes,omitempty"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&config); err != nil {
+		http.Error(w, "Error decodificando configuración", http.StatusBadRequest)
+		return
+	}
+
+	// Actualizar solo los campos proporcionados
+	if config.MaxNodes != nil {
+		s.config.SetMaxNodes(*config.MaxNodes)
+	}
+
+	if config.InitialNodes != nil {
+		s.config.SetInitialNodes(*config.InitialNodes)
+	}
+
+	// Guardar configuración actualizada
+	if err := s.config.Save(); err != nil {
+		s.logger.Printf("Error guardando configuración: %v", err)
+		http.Error(w, "Error guardando configuración", http.StatusInternalServerError)
+		return
+	}
+
+	// Guardar en la base de datos
+	if s.storage != nil {
+		if err := s.storage.SaveConfig(s.config); err != nil {
+			s.logger.Printf("Error guardando configuración en la base de datos: %v", err)
+		}
+	}
+
+	w.WriteHeader(http.StatusOK)
+	fmt.Fprintf(w, "Configuración actualizada correctamente")
+}
+
+// startHealthCheck inicia el monitoreo periódico de nodos
+func (s *SeedNode) startHealthCheck() {
+	ticker := time.NewTicker(s.healthCheckInterval)
+	defer ticker.Stop()
 
 	for {
-		<-ticker.C
-		pruned := s.nodeManager.PruneNodes(4 * time.Hour)
-		s.logger.Printf("Eliminados %d nodos inactivos", pruned)
+		select {
+		case <-ticker.C:
+			s.nodeManager.CheckAllNodes()
+		case <-s.stopChan:
+			return
+		}
+	}
+}
 
-		// Guardar configuración actualizada
-		if err := s.config.Save(); err != nil {
-			s.logger.Printf("Error guardando configuración: %v", err)
+// startNodePruning inicia el proceso de eliminación de nodos inactivos
+func (s *SeedNode) startNodePruning() {
+	ticker := time.NewTicker(s.pruneInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			pruned := s.nodeManager.PruneNodes(s.pruneAge)
+			s.logger.Printf("Eliminados %d nodos inactivos", pruned)
+
+			// Guardar configuración actualizada
+			if err := s.config.Save(); err != nil {
+				s.logger.Printf("Error guardando configuración: %v", err)
+			}
+
+			// Guardar en la base de datos
+			if s.storage != nil {
+				if err := s.storage.SaveConfig(s.config); err != nil {
+					s.logger.Printf("Error guardando configuración en la base de datos: %v", err)
+				}
+			}
+		case <-s.stopChan:
+			return
 		}
 	}
 }
@@ -163,4 +315,9 @@ func (s *SeedNode) startNodePruning() {
 // GetKnownNodes devuelve una copia de la lista de nodos conocidos
 func (s *SeedNode) GetKnownNodes() []string {
 	return s.nodeManager.GetAllNodes()
+}
+
+// GetActiveNodes devuelve una copia de la lista de nodos activos
+func (s *SeedNode) GetActiveNodes() []string {
+	return s.nodeManager.GetActiveNodes()
 }
