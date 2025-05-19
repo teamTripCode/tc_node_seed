@@ -1,4 +1,4 @@
-package main
+package scripts
 
 import (
 	"bytes"
@@ -14,7 +14,7 @@ import (
 	"time"
 )
 
-func MultiRegistry() {
+func main() {
 	// Parse command-line flags
 	seedNode := flag.String("seed", "localhost:3000", "Seed node address")
 	nodesRange := flag.String("nodes", "", "Range of node ports to register (e.g., 3001-3005) or comma-separated list (e.g., 3001,3002,3005)")
