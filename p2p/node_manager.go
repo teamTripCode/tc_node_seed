@@ -13,6 +13,7 @@ type NodeStatus struct {
 	LastSeen     time.Time `json:"lastSeen"`
 	IsResponding bool      `json:"isResponding"`
 	Version      string    `json:"version,omitempty"`
+	NodeType     NodeType  `json:"nodeType,omitempty"`
 }
 
 // NodeManager gestiona los nodos conocidos y su estado
@@ -73,20 +74,26 @@ func (nm *NodeManager) loadNodesFromStorage() {
 }
 
 // AddNode añade un nuevo nodo a la lista de nodos conocidos
-func (nm *NodeManager) AddNode(address string) bool {
+// o actualiza su tipo si ya existe.
+func (nm *NodeManager) AddNode(address string, nodeType NodeType) bool {
 	nm.mutex.Lock()
 	defer nm.mutex.Unlock()
 
 	// Verificar si ya existe
-	if _, exists := nm.nodes[address]; exists {
-		// Actualizar última vez visto
-		nm.nodes[address].LastSeen = time.Now()
+	if node, exists := nm.nodes[address]; exists {
+		// Actualizar última vez visto y tipo de nodo
+		node.LastSeen = time.Now()
+		node.NodeType = nodeType // Update node type
+		// Potentially add logic here if node type changes, e.g. re-validate or log
+		nm.logger.Printf("Nodo %s ya existe, actualizado LastSeen y NodeType a %s", address, nodeType)
 
 		// Persistir la actualización
 		if nm.storage != nil {
-			go nm.storage.SaveNode(nm.nodes[address])
+			go nm.storage.SaveNode(node) // node already includes NodeType
 		}
 
+		// Consider returning true if updating is also a "successful" operation for the caller
+		// For now, stick to false as per original logic for "already exists"
 		return false
 	}
 
@@ -100,11 +107,12 @@ func (nm *NodeManager) AddNode(address string) bool {
 	newNode := &NodeStatus{
 		Address:      address,
 		LastSeen:     time.Now(),
-		IsResponding: true,
+		IsResponding: true, // Assume new nodes are responding initially
+		NodeType:     nodeType, // Set node type
 	}
 
 	nm.nodes[address] = newNode
-	nm.logger.Printf("Nodo añadido: %s", address)
+	nm.logger.Printf("Nodo añadido: %s, Tipo: %s", address, nodeType)
 
 	// Persistir el nuevo nodo
 	if nm.storage != nil {
@@ -115,30 +123,59 @@ func (nm *NodeManager) AddNode(address string) bool {
 }
 
 // GetActiveNodes devuelve una lista de nodos activos
-func (nm *NodeManager) GetActiveNodes() []string {
+func (nm *NodeManager) GetActiveNodes() []*NodeStatus { // Return type changed
 	nm.mutex.RLock()
 	defer nm.mutex.RUnlock()
 
-	nodes := make([]string, 0)
-	for addr, status := range nm.nodes {
+	nodes := make([]*NodeStatus, 0)
+	for _, status := range nm.nodes { // Iterate over values (NodeStatus)
 		if status.IsResponding {
-			nodes = append(nodes, addr)
+			nodes = append(nodes, status)
 		}
 	}
-
 	return nodes
 }
 
 // GetAllNodes devuelve todos los nodos conocidos
-func (nm *NodeManager) GetAllNodes() []string {
+func (nm *NodeManager) GetAllNodes() []*NodeStatus { // Return type changed
 	nm.mutex.RLock()
 	defer nm.mutex.RUnlock()
 
-	nodes := make([]string, 0, len(nm.nodes))
-	for addr := range nm.nodes {
-		nodes = append(nodes, addr)
+	nodes := make([]*NodeStatus, 0, len(nm.nodes))
+	for _, node := range nm.nodes { // Iterate over values (NodeStatus)
+		nodes = append(nodes, node)
 	}
+	return nodes
+}
 
+// GetNodesByType devuelve nodos de un tipo específico.
+func (nm *NodeManager) GetNodesByType(nodeType NodeType) []*NodeStatus {
+	nm.mutex.RLock()
+	defer nm.mutex.RUnlock()
+
+	nodes := make([]*NodeStatus, 0)
+	for _, status := range nm.nodes {
+		if status.NodeType == nodeType {
+			// Create a copy to avoid external modifications if necessary,
+			// or return pointers directly if struct fields are not modified elsewhere.
+			// For simplicity, returning direct pointers here.
+			nodes = append(nodes, status)
+		}
+	}
+	return nodes
+}
+
+// GetActiveNodesByType devuelve nodos activos de un tipo específico.
+func (nm *NodeManager) GetActiveNodesByType(nodeType NodeType) []*NodeStatus {
+	nm.mutex.RLock()
+	defer nm.mutex.RUnlock()
+
+	nodes := make([]*NodeStatus, 0)
+	for _, status := range nm.nodes {
+		if status.IsResponding && status.NodeType == nodeType {
+			nodes = append(nodes, status)
+		}
+	}
 	return nodes
 }
 
@@ -194,12 +231,12 @@ func (nm *NodeManager) StartHealthCheck(interval time.Duration) {
 
 // CheckAllNodes verifica el estado de todos los nodos conocidos
 func (nm *NodeManager) CheckAllNodes() {
-	nodes := nm.GetAllNodes()
+	nodes := nm.GetAllNodes() // This now returns []*NodeStatus
 	nm.logger.Printf("Verificando estado de %d nodos", len(nodes))
 
-	for _, node := range nodes {
-		isActive := nm.CheckNodeStatus(node)
-		nm.logger.Printf("Nodo %s está %s", node, statusText(isActive))
+	for _, nodeStatus := range nodes { // Iterate over NodeStatus objects
+		isActive := nm.CheckNodeStatus(nodeStatus.Address) // Pass address to CheckNodeStatus
+		nm.logger.Printf("Nodo %s (Tipo: %s) está %s", nodeStatus.Address, nodeStatus.NodeType, statusText(isActive))
 	}
 
 	// Registrar estadística
