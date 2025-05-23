@@ -42,7 +42,7 @@ func NewNodeManager(config *Config, storage *DBStorage, logger *log.Logger) *Nod
 
 	// Añadir nodos iniciales de la configuración si no existen ya
 	for _, node := range config.GetInitialNodes() {
-		nm.AddNode(node)
+		nm.AddNode(node) // Replace NodeTypeUnknown with the appropriate type if needed
 	}
 
 	return nm
@@ -107,7 +107,7 @@ func (nm *NodeManager) AddNode(address string, nodeType NodeType) bool {
 	newNode := &NodeStatus{
 		Address:      address,
 		LastSeen:     time.Now(),
-		IsResponding: true, // Assume new nodes are responding initially
+		IsResponding: true,     // Assume new nodes are responding initially
 		NodeType:     nodeType, // Set node type
 	}
 
