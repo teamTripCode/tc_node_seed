@@ -130,43 +130,117 @@ func (s *SeedNode) Stop() {
 	}
 }
 
-// getNodesHandler devuelve la lista de todos los nodos conocidos
+// getNodesHandler devuelve la lista de nodos conocidos, con filtrado opcional
 func (s *SeedNode) getNodesHandler(w http.ResponseWriter, r *http.Request) {
-	s.logger.Printf("Recibida solicitud de lista de nodos desde %s", r.RemoteAddr)
+	s.logger.Printf("Recibida solicitud de lista de nodos desde %s, URI: %s", r.RemoteAddr, r.RequestURI)
 
-	nodes := s.nodeManager.GetAllNodes()
+	query := r.URL.Query()
+	nodeTypeFilter := query.Get("type")
+	requesterType := query.Get("requesterType") // New parameter to identify requester
+
+	var nodesToReturn []*NodeStatus // Uses the new return type from NodeManager
+
+	if NodeType(requesterType) == ValidatorNode {
+		s.logger.Printf("Solicitud de un validador, devolviendo solo validadores activos.")
+		nodesToReturn = s.nodeManager.GetActiveNodesByType(ValidatorNode)
+	} else if nodeTypeFilter != "" {
+		// Validate nodeTypeFilter if necessary
+		validNodeType := false
+		switch NodeType(nodeTypeFilter) {
+		case ValidatorNode, RegularNode:
+			validNodeType = true
+		}
+
+		if validNodeType {
+			s.logger.Printf("Filtrando nodos por tipo: %s", nodeTypeFilter)
+			nodesToReturn = s.nodeManager.GetNodesByType(NodeType(nodeTypeFilter))
+		} else {
+			s.logger.Printf("Tipo de nodo inválido en el filtro: %s. Devolviendo lista vacía.", nodeTypeFilter)
+			nodesToReturn = make([]*NodeStatus, 0) // Return empty list for invalid type
+			// Alternatively, return http.StatusBadRequest
+			// http.Error(w, fmt.Sprintf("Tipo de nodo inválido: %s", nodeTypeFilter), http.StatusBadRequest)
+			// return
+		}
+	} else {
+		s.logger.Printf("Devolviendo todos los nodos.")
+		nodesToReturn = s.nodeManager.GetAllNodes()
+	}
+
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(nodes)
+	if err := json.NewEncoder(w).Encode(nodesToReturn); err != nil {
+		s.logger.Printf("Error codificando nodos a JSON: %v", err)
+		http.Error(w, "Error procesando la solicitud", http.StatusInternalServerError)
+	}
 }
 
-// getActiveNodesHandler devuelve solo los nodos activos
+// getActiveNodesHandler devuelve solo los nodos activos, con filtrado opcional
 func (s *SeedNode) getActiveNodesHandler(w http.ResponseWriter, r *http.Request) {
-	s.logger.Printf("Recibida solicitud de lista de nodos activos desde %s", r.RemoteAddr)
+	s.logger.Printf("Recibida solicitud de lista de nodos activos desde %s, URI: %s", r.RemoteAddr, r.RequestURI)
 
-	nodes := s.nodeManager.GetActiveNodes()
+	query := r.URL.Query()
+	nodeTypeFilter := query.Get("type")
+	requesterType := query.Get("requesterType") // New parameter to identify requester
+
+	var activeNodesToReturn []*NodeStatus // Uses the new return type
+
+	if NodeType(requesterType) == ValidatorNode {
+		s.logger.Printf("Solicitud de un validador (para activos), devolviendo solo validadores activos.")
+		activeNodesToReturn = s.nodeManager.GetActiveNodesByType(ValidatorNode)
+	} else if nodeTypeFilter != "" {
+		// Validate nodeTypeFilter
+		if NodeType(nodeTypeFilter) != ValidatorNode && NodeType(nodeTypeFilter) != RegularNode {
+			s.logger.Printf("Tipo de nodo inválido para filtro activo: %s", nodeTypeFilter)
+			http.Error(w, "Tipo de nodo inválido para filtro", http.StatusBadRequest)
+			return
+		}
+		s.logger.Printf("Filtrando nodos activos por tipo: %s", nodeTypeFilter)
+		activeNodesToReturn = s.nodeManager.GetActiveNodesByType(NodeType(nodeTypeFilter))
+	} else {
+		s.logger.Printf("Devolviendo todos los nodos activos.")
+		activeNodesToReturn = s.nodeManager.GetActiveNodes()
+	}
+
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(nodes)
+	if err := json.NewEncoder(w).Encode(activeNodesToReturn); err != nil {
+		s.logger.Printf("Error codificando nodos activos a JSON: %v", err)
+		http.Error(w, "Error procesando la solicitud", http.StatusInternalServerError)
+	}
+}
+
+// NodeRegistrationRequest defines the expected request body for node registration
+type NodeRegistrationRequest struct {
+	Address  string   `json:"address"`
+	NodeType NodeType `json:"nodeType"`
 }
 
 // registerNodeHandler registra un nuevo nodo en la red
 func (s *SeedNode) registerNodeHandler(w http.ResponseWriter, r *http.Request) {
-	var node string
-	if err := json.NewDecoder(r.Body).Decode(&node); err != nil {
+	var req NodeRegistrationRequest // Use the new struct
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		s.logger.Printf("Error decodificando solicitud de registro: %v", err)
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
-	if s.nodeManager.AddNode(node) {
-		w.WriteHeader(http.StatusCreated)
-		s.logger.Printf("Nodo registrado con éxito: %s", node)
+	// Basic validation for NodeType (optional, but good practice)
+	if req.NodeType != ValidatorNode && req.NodeType != RegularNode {
+		s.logger.Printf("Tipo de nodo inválido: %s", req.NodeType)
+		http.Error(w, "Tipo de nodo inválido. Debe ser 'validator' o 'regular'.", http.StatusBadRequest)
+		return
+	}
 
-		// Registrar estadística
+	// NOTE: s.nodeManager.AddNode will need to be updated to accept NodeType
+	if s.nodeManager.AddNode(req.Address, req.NodeType) { // Pass NodeType here
+		w.WriteHeader(http.StatusCreated)
+		s.logger.Printf("Nodo registrado con éxito: %s, Tipo: %s", req.Address, req.NodeType)
+
+		// Registrar estadística (consider adding nodeType to stats)
 		if s.storage != nil {
 			stats := map[string]interface{}{
-				"event": "node_registered",
-				"node":  node,
-				"time":  time.Now().Format(time.RFC3339),
+				"event":    "node_registered",
+				"node":     req.Address,
+				"nodeType": req.NodeType, // Add nodeType to stats
+				"time":     time.Now().Format(time.RFC3339),
 			}
 
 			if err := s.storage.StoreStatistic("node_registration", stats); err != nil {
@@ -174,8 +248,8 @@ func (s *SeedNode) registerNodeHandler(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	} else {
-		w.WriteHeader(http.StatusOK)
-		s.logger.Printf("Nodo ya estaba registrado o límite alcanzado: %s", node)
+		w.WriteHeader(http.StatusOK) // Or perhaps a different status if it was already registered but type is different?
+		s.logger.Printf("Nodo ya estaba registrado o límite alcanzado: %s", req.Address)
 	}
 }
 
@@ -313,12 +387,12 @@ func (s *SeedNode) startNodePruning() {
 }
 
 // GetKnownNodes devuelve una copia de la lista de nodos conocidos
-func (s *SeedNode) GetKnownNodes() []string {
+func (s *SeedNode) GetKnownNodes() []*NodeStatus { // Updated return type
 	return s.nodeManager.GetAllNodes()
 }
 
 // GetActiveNodes devuelve una copia de la lista de nodos activos
-func (s *SeedNode) GetActiveNodes() []string {
+func (s *SeedNode) GetActiveNodes() []*NodeStatus { // Updated return type
 	return s.nodeManager.GetActiveNodes()
 }
 
