@@ -27,6 +27,12 @@ type SeedNode struct {
 	stopChan            chan struct{}
 }
 
+// NodeRegistrationRequest defines the expected request body for node registration
+type NodeRegistrationRequest struct {
+	Address  string   `json:"address"`
+	NodeType NodeType `json:"nodeType"`
+}
+
 // NewSeedNode crea una nueva instancia de nodo semilla
 func NewSeedNode(port int, logger *log.Logger) *SeedNode {
 	nodeID := fmt.Sprintf("localhost:%d", port)
@@ -222,12 +228,6 @@ func (s *SeedNode) getActiveNodesHandler(w http.ResponseWriter, r *http.Request)
 	}
 }
 
-// NodeRegistrationRequest defines the expected request body for node registration
-type NodeRegistrationRequest struct {
-	Address  string   `json:"address"`
-	NodeType NodeType `json:"nodeType"`
-}
-
 // registerNodeHandler registra un nuevo nodo en la red
 func (s *SeedNode) registerNodeHandler(w http.ResponseWriter, r *http.Request) {
 	var req NodeRegistrationRequest
@@ -296,7 +296,7 @@ func (s *SeedNode) statusHandler(w http.ResponseWriter, r *http.Request) {
 func (s *SeedNode) getStatisticsHandler(w http.ResponseWriter, r *http.Request) {
 	s.logger.Printf("Recibida solicitud de estadísticas desde %s", r.RemoteAddr)
 
-	stats := map[string]interface{}{
+	stats := map[string]any{
 		"totalNodes":      len(s.nodeManager.GetAllNodes()),
 		"activeNodes":     len(s.nodeManager.GetActiveNodes()),
 		"nodesRatio":      float64(len(s.nodeManager.GetActiveNodes())) / float64(len(s.nodeManager.GetAllNodes())),
