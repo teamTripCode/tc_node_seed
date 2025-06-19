@@ -40,11 +40,6 @@ func NewNodeManager(config *Config, storage *DBStorage, logger *log.Logger) *Nod
 		nm.loadNodesFromStorage()
 	}
 
-	// Añadir nodos iniciales de la configuración si no existen ya
-	for _, node := range config.GetInitialNodes() {
-		nm.AddNode(node, RegularNode) // Asignar tipo por defecto para nodos iniciales
-	}
-
 	return nm
 }
 

@@ -8,7 +8,6 @@ import (
 
 // Config representa la configuración del nodo semilla
 type Config struct {
-	InitialNodes        []string     `json:"initialNodes"`        // Lista inicial de nodos conocidos
 	MaxNodes            int          `json:"maxNodes"`            // Número máximo de nodos a almacenar
 	ConfigFile          string       `json:"configFile"`          // Ruta al archivo de configuración
 	DBPath              string       `json:"dbPath"`              // Ruta al directorio de la base de datos
@@ -21,7 +20,6 @@ type Config struct {
 // NewConfig crea una nueva configuración con valores por defecto
 func NewConfig(configFile string) *Config {
 	config := &Config{
-		InitialNodes:        []string{},
 		MaxNodes:            100, // Valor por defecto
 		ConfigFile:          configFile,
 		DBPath:              "data/leveldb", // Directorio por defecto para LevelDB
@@ -75,25 +73,6 @@ func (c *Config) Save() error {
 	encoder := json.NewEncoder(file)
 	encoder.SetIndent("", "  ")
 	return encoder.Encode(c)
-}
-
-// GetInitialNodes devuelve una copia de los nodos iniciales
-func (c *Config) GetInitialNodes() []string {
-	c.mutex.RLock()
-	defer c.mutex.RUnlock()
-
-	nodes := make([]string, len(c.InitialNodes))
-	copy(nodes, c.InitialNodes)
-	return nodes
-}
-
-// SetInitialNodes establece los nodos iniciales
-func (c *Config) SetInitialNodes(nodes []string) {
-	c.mutex.Lock()
-	defer c.mutex.Unlock()
-
-	c.InitialNodes = make([]string, len(nodes))
-	copy(c.InitialNodes, nodes)
 }
 
 // GetMaxNodes devuelve el número máximo de nodos
