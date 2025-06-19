@@ -5,6 +5,6 @@ type NodeType string
 const (
 	SeedsNode     NodeType = "seed"
 	ValidatorNode NodeType = "validator"
-	RegularNode   NodeType = "regular"
+	FullNode      NodeType = "full"
 	APINode       NodeType = "api"
 )
