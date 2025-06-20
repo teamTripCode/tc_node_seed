@@ -75,6 +75,9 @@ func (s *SeedNode) setupRoutes() {
 	s.router.HandleFunc("/status", s.statusHandler).Methods("GET")
 	s.router.HandleFunc("/nodes/active", s.getActiveNodesHandler).Methods("GET")
 
+	// Ruta para que otros nodos notifiquen sobre nuevos pares
+	s.router.HandleFunc("/notify-new-peer", s.notifyNewPeerHandler).Methods("POST")
+
 	// Nuevas rutas para administración
 	s.router.HandleFunc("/admin/statistics", s.getStatisticsHandler).Methods("GET")
 	s.router.HandleFunc("/admin/config", s.getConfigHandler).Methods("GET")
@@ -354,6 +357,61 @@ func (s *SeedNode) updateConfigHandler(w http.ResponseWriter, r *http.Request) {
 
 	w.WriteHeader(http.StatusOK)
 	fmt.Fprintf(w, "Configuración actualizada correctamente")
+}
+
+// notifyNewPeerHandler maneja las notificaciones de nuevos nodos recibidas de otros pares.
+func (s *SeedNode) notifyNewPeerHandler(w http.ResponseWriter, r *http.Request) {
+	s.logger.Printf("Recibida notificación de nuevo par desde %s", r.RemoteAddr)
+
+	var notification NodeUpdateNotification
+	if err := json.NewDecoder(r.Body).Decode(&notification); err != nil {
+		s.logger.Printf("Error decodificando notificación de nuevo par: %v", err)
+		http.Error(w, "Cuerpo de la solicitud inválido: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	defer r.Body.Close()
+
+	// Validación básica
+	if notification.Address == "" {
+		s.logger.Printf("Dirección de nodo faltante en la notificación de nuevo par.")
+		http.Error(w, "Dirección de nodo faltante", http.StatusBadRequest)
+		return
+	}
+	if notification.NodeType == "" { // Asumiendo que NodeType no puede ser vacío. Ajustar si es necesario.
+		s.logger.Printf("Tipo de nodo faltante en la notificación de nuevo par para %s.", notification.Address)
+		http.Error(w, "Tipo de nodo faltante", http.StatusBadRequest)
+		return
+	}
+    // Validar NodeType
+    switch notification.NodeType {
+    case ValidatorNode, RegularNode, APINode, SeedsNode, FullNode: // Incluyendo FullNode por si acaso
+        // Tipo de nodo válido
+    default:
+        s.logger.Printf("Tipo de nodo inválido '%s' en la notificación de nuevo par para %s.", notification.NodeType, notification.Address)
+        http.Error(w, fmt.Sprintf("Tipo de nodo inválido: %s", notification.NodeType), http.StatusBadRequest)
+        return
+    }
+
+
+	s.logger.Printf("Procesando notificación para añadir nodo: %s, Tipo: %s", notification.Address, notification.NodeType)
+
+	// Añadir el nodo al gestor de nodos local.
+	// AddNode se encarga de la lógica de si es nuevo o una actualización.
+	// También maneja el límite de nodos.
+	if s.nodeManager.AddNode(notification.Address, notification.NodeType) {
+		// El nodo fue añadido exitosamente (era nuevo)
+		s.logger.Printf("Nodo %s (Tipo: %s) añadido exitosamente a través de notificación.", notification.Address, notification.NodeType)
+		w.WriteHeader(http.StatusCreated)
+		fmt.Fprintf(w, "Nodo %s registrado/actualizado exitosamente.", notification.Address)
+	} else {
+		// El nodo ya existía (actualizado) o no se pudo añadir (límite alcanzado)
+		// AddNode ya loguea estos casos.
+		// Devolver OK implica que la solicitud fue procesada, incluso si el nodo ya existía.
+		s.logger.Printf("Nodo %s (Tipo: %s) ya existía o no se pudo añadir (límite alcanzado) a través de notificación.", notification.Address, notification.NodeType)
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprintf(w, "Nodo %s procesado (ya existía o límite alcanzado).", notification.Address)
+
+	}
 }
 
 // startHealthCheck inicia el monitoreo periódico de nodos
