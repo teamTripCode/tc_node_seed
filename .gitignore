@@ -1,2 +1,3 @@
 data
 /seed_config.json
+.env*

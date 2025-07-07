@@ -85,9 +85,6 @@ func (s *SeedNode) setupRoutes() {
 func (s *SeedNode) Start() {
 	s.logger.Printf("Nodo semilla iniciando en puerto %d", s.Port)
 
-	// Inicializar nodos por defecto
-	s.initializeDefaultNodes()
-
 	// Iniciar monitoreo de nodos
 	go s.startHealthCheck()
 
@@ -109,31 +106,6 @@ func (s *SeedNode) Start() {
 			s.logger.Fatalf("Error iniciando el servidor HTTP: %v", err)
 		}
 	}()
-}
-
-// initializeDefaultNodes inicializa los nodos por defecto en la red
-func (s *SeedNode) initializeDefaultNodes() {
-	// Definir nodos iniciales por defecto
-	defaultNodes := map[string]NodeType{
-		"localhost:3000": SeedsNode,     // Nodo semilla principal
-		"localhost:3001": ValidatorNode, // Nodo validador inicial
-		"localhost:3002": RegularNode,   // Nodo completo inicial
-		"localhost:3003": APINode,       // Nodo API inicial
-	}
-
-	s.logger.Printf("Inicializando nodos por defecto...")
-
-	for address, nodeType := range defaultNodes {
-		// Solo agregar si no existe ya
-		if s.nodeManager.GetNodeDetails(address) == nil {
-			s.nodeManager.AddNode(address, nodeType)
-			s.logger.Printf("Nodo por defecto agregado: %s (Tipo: %s)", address, nodeType)
-		} else {
-			s.logger.Printf("Nodo por defecto ya existe: %s", address)
-		}
-	}
-
-	s.logger.Printf("Inicialización de nodos por defecto completada")
 }
 
 // Stop detiene todas las rutinas del nodo semilla
@@ -170,7 +142,7 @@ func (s *SeedNode) getNodesHandler(w http.ResponseWriter, r *http.Request) {
 		// Validate nodeTypeFilter
 		validNodeType := false
 		switch NodeType(nodeTypeFilter) {
-		case ValidatorNode, RegularNode, APINode, SeedsNode:
+		case ValidatorNode, FullNode, APINode, SeedsNode:
 			validNodeType = true
 		}
 
@@ -208,7 +180,7 @@ func (s *SeedNode) getActiveNodesHandler(w http.ResponseWriter, r *http.Request)
 		activeNodesToReturn = s.nodeManager.GetActiveNodesByType(ValidatorNode)
 	} else if nodeTypeFilter != "" {
 		// Validate nodeTypeFilter
-		if NodeType(nodeTypeFilter) != ValidatorNode && NodeType(nodeTypeFilter) != RegularNode &&
+		if NodeType(nodeTypeFilter) != ValidatorNode && NodeType(nodeTypeFilter) != FullNode &&
 			NodeType(nodeTypeFilter) != APINode && NodeType(nodeTypeFilter) != SeedsNode {
 			s.logger.Printf("Tipo de nodo inválido para filtro activo: %s", nodeTypeFilter)
 			http.Error(w, "Tipo de nodo inválido para filtro", http.StatusBadRequest)
@@ -238,7 +210,7 @@ func (s *SeedNode) registerNodeHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Basic validation for NodeType
-	if req.NodeType != ValidatorNode && req.NodeType != RegularNode &&
+	if req.NodeType != ValidatorNode && req.NodeType != FullNode &&
 		req.NodeType != APINode && req.NodeType != SeedsNode {
 		s.logger.Printf("Tipo de nodo inválido: %s", req.NodeType)
 		http.Error(w, "Tipo de nodo inválido. Debe ser 'validator', 'regular', 'api' o 'seed'.", http.StatusBadRequest)
@@ -279,7 +251,7 @@ func (s *SeedNode) pingHandler(w http.ResponseWriter, r *http.Request) {
 func (s *SeedNode) statusHandler(w http.ResponseWriter, r *http.Request) {
 	s.logger.Printf("Recibida solicitud de estado desde %s", r.RemoteAddr)
 
-	status := map[string]interface{}{
+	status := map[string]any{
 		"id":          s.ID,
 		"totalNodes":  len(s.nodeManager.GetAllNodes()),
 		"activeNodes": len(s.nodeManager.GetActiveNodes()),
@@ -332,10 +304,6 @@ func (s *SeedNode) updateConfigHandler(w http.ResponseWriter, r *http.Request) {
 	// Actualizar solo los campos proporcionados
 	if config.MaxNodes != nil {
 		s.config.SetMaxNodes(*config.MaxNodes)
-	}
-
-	if config.InitialNodes != nil {
-		s.config.SetInitialNodes(*config.InitialNodes)
 	}
 
 	// Guardar configuración actualizada
